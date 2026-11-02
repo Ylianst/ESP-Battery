@@ -16,6 +16,10 @@ This allows capturing and experimenting with the battery protocol from a PC (e.g
 
 See [Supported Devices](documentation/devices.md) for tested hardware and the matching `uart` / GPIO settings.
 
+See [Additional Information Sources](documentation/additional-sources.md) for
+battery/inverter manuals, official monitoring software, owner forums and
+community protocol references.
+
 ## Sample ESPHome configuration
 
 ```yaml
