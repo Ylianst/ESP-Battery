@@ -23,9 +23,13 @@ Enter the ESP32 **hostname or IP address** and **TCP port**, then click
 is unavailable on your computer, use the ESP32's IP address instead. The port
 must match the ESPHome `espbattery.port` setting.
 
-The bridge must already have traffic from an inverter or another bus controller.
-This app does not poll the bus. It discovers batteries from validated replies,
-not from scans of unused addresses. An idle connection remains open indefinitely.
+The bridge must already have traffic from an inverter, a master battery or
+another bus controller. This app does not poll the bus. It discovers batteries
+from validated replies, not from scans of unused addresses. In the
+[observed SG48100 installation](../../README.md#equipment-and-rs485-polling),
+battery 1 polls batteries 2-4 but not itself, so only batteries 2-4 appear in the
+dashboard. The default DIP-switch address of 0 produced no traffic on that bus.
+An idle connection remains open indefinitely.
 
 ## Dashboard
 

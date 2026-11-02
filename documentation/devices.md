@@ -10,7 +10,9 @@ Unlike a hot tub controller, the battery RS485 port does not provide power to th
 
 The SG48100 exposes its RS485 bus on an RJ45 connector. Check your battery manual for the exact pinout and connect the RS485 **A** (sometimes labeled `+` or `D+`) and **B** (sometimes labeled `-` or `D-`) lines to the matching A/B terminals on your RS485 module. If you see no data, or only garbage, try swapping A and B. Connect ground too if your RS485 module and battery both have a GND terminal.
 
-Most battery BMS RS485 ports need a master (inverter or PC) to send requests before they reply. The ESP-Battery component forwards any bytes you send over TCP to the RS485 bus, so you can send requests from a PC to see how the battery responds.
+Most battery BMS RS485 ports need a master (inverter, PC or master battery) to send requests before they reply. In the [observed four-battery installation](../README.md#equipment-and-rs485-polling), setting one SG48100 to address 1 starts battery-to-battery polling; leaving the DIP-switch addresses at their default of 0 produced no traffic. Battery 1 polls batteries 2-4 but not itself, so passive monitoring on that bus only receives data for batteries 2-4.
+
+The ESP-Battery component forwards any bytes you send over TCP to the RS485 bus, so you can send requests from a PC to see how the battery responds. Avoid introducing a second polling master on a bus already being polled by a battery or inverter.
 
 # M5Stack ATOM Lite ESP32 IoT Development Kit
 

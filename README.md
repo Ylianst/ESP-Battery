@@ -20,6 +20,49 @@ See [Additional Information Sources](documentation/additional-sources.md) for
 battery/inverter manuals, official monitoring software, owner forums and
 community protocol references.
 
+## Observed installation and operating notes
+
+These are owner-reported observations from this installation, not manufacturer
+specifications or behavior verified for every battery/inverter configuration.
+
+### Equipment and RS485 polling
+
+- Two BluePower SP6548 inverters (the supplied manual is
+  [BluePower_SP6548-20231129](documentation/BluePower_SP6548-20231129.md)) and four
+  [SG48100 batteries](documentation/SG48100.md) are available. Only one inverter
+  is installed, and it is connected to all four batteries.
+- The ESP32 RS485 interface is connected to the **battery-to-battery RS485 bus**.
+- The batteries arrived with their DIP-switch addresses set to **0**. With that
+  default configuration, no traffic was observed on this bus. Setting one
+  battery to **address 1** makes it poll the other batteries; in this installation
+  the four batteries use addresses **1, 2, 3 and 4**. Consult the battery manual
+  for the DIP-switch positions corresponding to each address.
+- Battery 1 **does not poll itself** on this bus. As currently connected, the
+  ESP32 therefore receives data only for batteries **2, 3 and 4**. Passive
+  monitoring cannot show battery 1's readings when they are absent from the
+  captured traffic; its missing data does not by itself indicate a bridge or
+  decoder failure.
+
+### Inverter idle load and AC charging
+
+- The installed inverter consumes approximately **40-60 W while idling**. This
+  overhead must be included in the system's energy budget, especially when
+  charging slowly.
+- Connecting the inverter's AC input to a GFCI-protected outlet trips the GFCI in
+  this installation. The owner was told this is normal, but the cause and
+  compatibility have not been verified.
+- The owner-reported temporary charging setup uses an extension cord from a
+  non-GFCI outlet with the inverter limited to **10 A**. A Kill-A-Watt reports
+  approximately **600 W of AC input power**, resulting in slow charging. This is
+  an input measurement, not measured power delivered to the batteries; inverter
+  consumption and conversion losses reduce the power available for charging.
+
+**Electrical safety:** The temporary setup above is an observation, not a
+recommended workaround. Do not bypass required GFCI protection or assume a trip
+is harmless. Have the manufacturer and a qualified electrician verify the cause,
+grounding, required protection and a compliant AC supply. Any cord and circuit
+must be suitable for the load and installation.
+
 ## Sample ESPHome configuration
 
 ```yaml
@@ -168,5 +211,7 @@ flutter run -d windows
 ```
 
 Defaults are `sunpower.local:1234`. The dashboard is read-only and relies on
-existing polling traffic from your inverter/controller. It marks stale readings
-and exposes unknown vendor fields without guessing their meanings.
+existing polling traffic from your inverter/controller or a master battery.
+In the [installation described above](#equipment-and-rs485-polling), battery 1
+polls batteries 2-4, so only those three batteries appear. The dashboard marks
+stale readings and exposes unknown vendor fields without guessing their meanings.
