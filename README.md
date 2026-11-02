@@ -16,6 +16,8 @@ This allows capturing and experimenting with the battery protocol from a PC (e.g
 
 See [Supported Devices](documentation/devices.md) for tested hardware and the matching `uart` / GPIO settings.
 
+For the battery-to-battery bus, see the [SG48100 RS485 wiring pinout](documentation/devices.md#sg48100-battery-to-battery-rs485-pinout): pins **3 and 6 are ground**, while pins **4 and 5 are floating (unconnected)**.
+
 See [Additional Information Sources](documentation/additional-sources.md) for
 battery/inverter manuals, official monitoring software, owner forums and
 community protocol references.
