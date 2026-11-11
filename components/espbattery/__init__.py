@@ -11,9 +11,28 @@ DEPENDENCIES = ["network"]
 MULTI_CONF = True
 
 CONF_CANBUS_ID = "canbus_id"
+CONF_ESPBATTERY_ID = "espbattery_id"
 
 espbattery_ns = cg.esphome_ns.namespace("espbattery")
 ESPBatteryComponent = espbattery_ns.class_("ESPBatteryComponent", cg.Component)
+
+ESPBATTERY_ENTITY_SCHEMA = cv.Schema(
+    {cv.GenerateID(CONF_ESPBATTERY_ID): cv.use_id(ESPBatteryComponent)}
+)
+
+def validate_can_entity(config):
+    full_config = fv.full_config.get()
+    path = full_config.get_path_for_id(config[CONF_ESPBATTERY_ID])[:-1]
+    parent = full_config.get_config_for_path(path)
+    if CONF_CANBUS_ID not in parent:
+        raise cv.Invalid("PYLON entities require an espbattery instance with canbus_id.")
+    return config
+
+async def pylon_parent(config):
+    cg.add_define("USE_ESPBATTERY_PYLON")
+    parent = await cg.get_variable(config[CONF_ESPBATTERY_ID])
+    cg.add(parent.set_pylon_enabled(True))
+    return parent
 
 def validate_buffer_size(buffer_size):
     if buffer_size & (buffer_size - 1) != 0:

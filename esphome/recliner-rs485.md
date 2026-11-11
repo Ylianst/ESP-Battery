@@ -92,6 +92,45 @@ espbattery:
     buffer_size: 1024
 
 # ==========================================================
+# PYLON CAN Battery Bank Telemetry
+# ==========================================================
+sensor:
+  - platform: espbattery
+    espbattery_id: can_bridge
+    voltage:
+      name: "Battery Bank Voltage"
+    current:
+      name: "Battery Bank Current"
+    power:
+      name: "Battery Bank Power"
+    temperature:
+      name: "Battery Bank Temperature"
+    state_of_charge:
+      name: "Battery Bank State of Charge"
+    state_of_health:
+      name: "Battery Bank State of Health"
+    charge_voltage_limit:
+      name: "Battery Bank Charge Voltage Limit"
+    charge_current_limit:
+      name: "Battery Bank Charge Current Limit"
+    discharge_current_limit:
+      name: "Battery Bank Discharge Current Limit"
+    module_count:
+      name: "Battery Bank Module Count"
+    protection_flags:
+      name: "Battery Bank Protection Flags"
+      disabled_by_default: true
+    warning_flags:
+      name: "Battery Bank Warning Flags"
+      disabled_by_default: true
+
+text_sensor:
+  - platform: espbattery
+    espbattery_id: can_bridge
+    manufacturer:
+      name: "Battery Bank Manufacturer"
+
+# ==========================================================
 # Hardware Buses
 # ==========================================================
 i2c:
@@ -134,9 +173,20 @@ light:
     num_leds: 1
 
 # ==========================================================
-# Digital Inputs
+# CAN Status and Digital Inputs
 # ==========================================================
 binary_sensor:
+  - platform: espbattery
+    espbattery_id: can_bridge
+    charging_allowed:
+      name: "Battery Bank Charging Allowed"
+    discharging_allowed:
+      name: "Battery Bank Discharging Allowed"
+    protection_active:
+      name: "Battery Bank Protection Active"
+    warning_active:
+      name: "Battery Bank Warning Active"
+
   - platform: gpio
     name: "Boot Button"
     pin:

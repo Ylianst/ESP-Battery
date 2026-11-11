@@ -10,6 +10,18 @@
 #include "esphome/components/canbus/canbus.h"
 #include "slcan.h"
 #endif
+#ifdef USE_ESPBATTERY_PYLON
+#include "pylon.h"
+#endif
+#ifdef USE_ESPBATTERY_PYLON_SENSOR
+#include "esphome/components/sensor/sensor.h"
+#endif
+#ifdef USE_ESPBATTERY_PYLON_BINARY_SENSOR
+#include "esphome/components/binary_sensor/binary_sensor.h"
+#endif
+#ifdef USE_ESPBATTERY_PYLON_TEXT_SENSOR
+#include "esphome/components/text_sensor/text_sensor.h"
+#endif
 
 #include <memory>
 #include <string>
@@ -32,6 +44,32 @@ public:
 	void set_buffer_size(size_t size) { this->buf_size_ = size; }
 	void set_flow_control_pin(GPIOPin *flow_control_pin) { this->flow_control_pin_ = flow_control_pin; }
 	void set_port(uint16_t port) { this->port_ = port; }
+#ifdef USE_ESPBATTERY_PYLON
+	void set_pylon_enabled(bool enabled) { this->pylon_enabled_ = enabled; }
+#endif
+#ifdef USE_ESPBATTERY_PYLON_SENSOR
+	void set_voltage_sensor(sensor::Sensor *sensor) { this->voltage_sensor_ = sensor; }
+	void set_current_sensor(sensor::Sensor *sensor) { this->current_sensor_ = sensor; }
+	void set_power_sensor(sensor::Sensor *sensor) { this->power_sensor_ = sensor; }
+	void set_temperature_sensor(sensor::Sensor *sensor) { this->temperature_sensor_ = sensor; }
+	void set_state_of_charge_sensor(sensor::Sensor *sensor) { this->state_of_charge_sensor_ = sensor; }
+	void set_state_of_health_sensor(sensor::Sensor *sensor) { this->state_of_health_sensor_ = sensor; }
+	void set_charge_voltage_limit_sensor(sensor::Sensor *sensor) { this->charge_voltage_limit_sensor_ = sensor; }
+	void set_charge_current_limit_sensor(sensor::Sensor *sensor) { this->charge_current_limit_sensor_ = sensor; }
+	void set_discharge_current_limit_sensor(sensor::Sensor *sensor) { this->discharge_current_limit_sensor_ = sensor; }
+	void set_module_count_sensor(sensor::Sensor *sensor) { this->module_count_sensor_ = sensor; }
+	void set_protection_flags_sensor(sensor::Sensor *sensor) { this->protection_flags_sensor_ = sensor; }
+	void set_warning_flags_sensor(sensor::Sensor *sensor) { this->warning_flags_sensor_ = sensor; }
+#endif
+#ifdef USE_ESPBATTERY_PYLON_BINARY_SENSOR
+	void set_charging_allowed_binary_sensor(binary_sensor::BinarySensor *sensor) { this->charging_allowed_binary_sensor_ = sensor; }
+	void set_discharging_allowed_binary_sensor(binary_sensor::BinarySensor *sensor) { this->discharging_allowed_binary_sensor_ = sensor; }
+	void set_protection_active_binary_sensor(binary_sensor::BinarySensor *sensor) { this->protection_active_binary_sensor_ = sensor; }
+	void set_warning_active_binary_sensor(binary_sensor::BinarySensor *sensor) { this->warning_active_binary_sensor_ = sensor; }
+#endif
+#ifdef USE_ESPBATTERY_PYLON_TEXT_SENSOR
+	void set_manufacturer_text_sensor(text_sensor::TextSensor *sensor) { this->manufacturer_text_sensor_ = sensor; }
+#endif
 
 	void setup() override;
 	void loop() override;
@@ -41,6 +79,33 @@ public:
 	float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
 
 protected:
+#ifdef USE_ESPBATTERY_PYLON
+	void publish_pylon_(const PylonMessage &message);
+	bool pylon_enabled_{false};
+#endif
+#ifdef USE_ESPBATTERY_PYLON_SENSOR
+	sensor::Sensor *voltage_sensor_{nullptr};
+	sensor::Sensor *current_sensor_{nullptr};
+	sensor::Sensor *power_sensor_{nullptr};
+	sensor::Sensor *temperature_sensor_{nullptr};
+	sensor::Sensor *state_of_charge_sensor_{nullptr};
+	sensor::Sensor *state_of_health_sensor_{nullptr};
+	sensor::Sensor *charge_voltage_limit_sensor_{nullptr};
+	sensor::Sensor *charge_current_limit_sensor_{nullptr};
+	sensor::Sensor *discharge_current_limit_sensor_{nullptr};
+	sensor::Sensor *module_count_sensor_{nullptr};
+	sensor::Sensor *protection_flags_sensor_{nullptr};
+	sensor::Sensor *warning_flags_sensor_{nullptr};
+#endif
+#ifdef USE_ESPBATTERY_PYLON_BINARY_SENSOR
+	binary_sensor::BinarySensor *charging_allowed_binary_sensor_{nullptr};
+	binary_sensor::BinarySensor *discharging_allowed_binary_sensor_{nullptr};
+	binary_sensor::BinarySensor *protection_active_binary_sensor_{nullptr};
+	binary_sensor::BinarySensor *warning_active_binary_sensor_{nullptr};
+#endif
+#ifdef USE_ESPBATTERY_PYLON_TEXT_SENSOR
+	text_sensor::TextSensor *manufacturer_text_sensor_{nullptr};
+#endif
 	void accept();
 	void cleanup();
 	void read();

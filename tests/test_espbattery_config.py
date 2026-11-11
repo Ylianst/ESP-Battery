@@ -127,6 +127,67 @@ class ESPBatteryConfigTest(unittest.TestCase):
         self.assertIn("set_port(1234)", generated)
         self.assertIn("set_port(1235)", generated)
 
+    def pylon_entities(self):
+        self.config["espbattery"] = [
+            {"id": "uart_bridge", "uart_id": "test_uart", "port": 1234},
+            {"id": "can_bridge", "canbus_id": "test_can", "port": 1235},
+        ]
+        self.config["sensor"] = [{
+            "platform": "espbattery", "espbattery_id": "can_bridge",
+            **{key: {"name": key} for key in (
+                "voltage", "current", "power", "temperature", "state_of_charge",
+                "state_of_health", "charge_voltage_limit", "charge_current_limit",
+                "discharge_current_limit", "module_count", "protection_flags", "warning_flags",
+            )},
+        }]
+        self.config["binary_sensor"] = [{
+            "platform": "espbattery", "espbattery_id": "can_bridge",
+            **{key: {"name": key} for key in (
+                "charging_allowed", "discharging_allowed", "protection_active", "warning_active",
+            )},
+        }]
+        self.config["text_sensor"] = [{
+            "platform": "espbattery", "espbattery_id": "can_bridge",
+            "manufacturer": {"name": "manufacturer"},
+        }]
+
+    def test_all_pylon_entities(self):
+        self.pylon_entities()
+        generated = self.validate(generate=True)
+        self.assertIn("can_bridge->set_pylon_enabled(true)", generated)
+        self.assertNotIn("uart_bridge->set_pylon_enabled", generated)
+        for domain, suffix in (("sensor", "sensor"), ("binary_sensor", "binary_sensor"), ("text_sensor", "text_sensor")):
+            for key in self.config[domain][0]:
+                if key not in ("platform", "espbattery_id"):
+                    self.assertIn(f"can_bridge->set_{key}_{suffix}", generated)
+
+    def test_pylon_entity_platforms_independently_without_tcp(self):
+        del self.config["uart"]
+        for domain in ("sensor", "binary_sensor", "text_sensor"):
+            with self.subTest(domain=domain):
+                self.pylon_entities()
+                for other in ("sensor", "binary_sensor", "text_sensor"):
+                    if other != domain:
+                        del self.config[other]
+                self.config["espbattery"] = [{
+                    "id": "can_bridge", "canbus_id": "test_can", "port": 0,
+                }]
+                self.assertIn("can_bridge->set_pylon_enabled(true)", self.validate(generate=True))
+
+    def test_pylon_entities_reject_uart_parent(self):
+        for domain in ("sensor", "binary_sensor", "text_sensor"):
+            with self.subTest(domain=domain):
+                self.pylon_entities()
+                self.config[domain][0]["espbattery_id"] = "uart_bridge"
+                self.validate("PYLON entities require")
+
+    def test_empty_pylon_entities_rejected(self):
+        for domain in ("sensor", "binary_sensor", "text_sensor"):
+            with self.subTest(domain=domain):
+                self.pylon_entities()
+                self.config[domain] = [{"platform": "espbattery", "espbattery_id": "can_bridge"}]
+                self.validate("at least one")
+
     def test_invalid_transports(self):
         self.config["espbattery"] = {"uart_id": "test_uart", "canbus_id": "test_can"}
         self.validate("not both")

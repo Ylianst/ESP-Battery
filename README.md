@@ -2,7 +2,9 @@
 
 ESPHome external component for SunGold SG48100 batteries (and similar) that communicate over RS485.
 
-The goal is to read the batteries' RS485 traffic, decode it and publish the values as ESPHome / Home Assistant sensors. At this stage, the protocol is not yet decoded, so the component acts as a **transparent RS485-to-TCP forwarder**:
+The component provides a **transparent RS485-to-TCP forwarder** for battery
+protocol analysis, plus optional **PYLON CAN decoding** into ESPHome / Home
+Assistant entities. RS485 decoding remains in the PC tools rather than firmware:
 
 - Every byte received on the RS485 bus is sent to all connected TCP clients.
 - Every byte received from a TCP client is written to the RS485 bus (with the optional flow control / DE pin asserted while transmitting).
@@ -96,6 +98,45 @@ checksum-valid success replies are **not additional batteries or usable
 all-pack data**. Direct destination 1 also timed out. Earlier tests restricted
 to selectors 1-4 missed selector 5 and incorrectly left the fourth pack
 unaccounted for; the working inverter-bus selector range is **2-5**, not 1-4.
+
+### CAN / PYLON live findings
+
+Live testing on **November 11, 2026** confirmed CAN traffic through
+`recliner.local:1235`, connected to **battery 1's CAN interface** with its
+inverter protocol configured as **PYLON**. The bridge uses **500 kbps CAN**
+and SLCAN ASCII framing over TCP.
+
+Two receive-only captures collected **147 valid frames in approximately
+30 seconds** (98 in 20 seconds, then 49 in 10 seconds). **No TCP writes,
+CAN polling requests or inverter heartbeat frames were sent by the test
+client.** The battery was already broadcasting six standard CAN IDs.
+
+| CAN ID | Observed SLCAN record (without trailing `\r`) | Decoded snapshot |
+| --- | --- | --- |
+| `0x351` | `t351834025807A00FB001` | Charge voltage limit **56.4 V**, charge current limit **188 A**, discharge current limit **400 A** |
+| `0x355` | `t35584900640000000000` | Reported SOC **73%**, SOH **100%** |
+| `0x356` | `t3568F6140000AD000000` | Voltage **53.66 V**, current **0.0 A**, temperature **17.3 C** |
+| `0x359` | `t35980000000004504E00` | Protection/warning bytes **all zero**, reported module count **4**, marker `PN` |
+| `0x35C` | `t35C8C000000000000000` | Charge and discharge permission bits **both enabled** (`0xC0`) |
+| `0x35E` | `t35E84C454F4348202020` | Manufacturer string **`LEOCH`** |
+
+Decoding follows the standard low-voltage PYLON layouts, also implemented in
+[Battery-Emulator's PYLON LV CAN adapter](https://github.com/dalathegreat/Battery-Emulator/blob/main/Software/src/inverter/PYLON-LV-CAN.cpp).
+Multibyte measurements are little-endian: `0x351` limits use 0.1 V / 0.1 A,
+`0x355` SOC/SOH use whole percentages, and `0x356` uses 0.01 V, signed
+0.1 A and signed 0.1 C. Extra bytes beyond these documented fields are
+preserved above without assigning vendor-specific meanings. These are
+reported snapshots and BMS limits, not independently measured values or
+recommendations for configuring charging equipment.
+
+**Per-pack limitation:** Only one inverter-facing dataset was observed.
+Its module-count field reports four, consistent with a bank-level report
+through battery 1, but this does not establish access to four separately
+addressed packs or prove how every field is aggregated. No individual pack
+voltages, cell voltages or pack-addressed CAN replies were established.
+Use the verified [RS485 inverter-bus polling method above](#four-pack-discovery-and-bus-specific-numbering)
+for separate pack readings, subject to its sole-master requirement. The CAN
+test verifies reception and decoding, **not TCP-to-CAN transmission**.
 
 ### Inverter idle load and AC charging
 
@@ -264,6 +305,95 @@ expose these ports to the Internet, and only send frames understood by the
 connected equipment. Existing RS485 tools and dashboard still use **1234**;
 they do not decode CAN.
 
+### PYLON CAN sensors for Home Assistant
+
+The `espbattery` sensor, binary-sensor and text-sensor platforms optionally
+decode the six standard low-voltage PYLON CAN messages documented in the
+[live findings](#can--pylon-live-findings). Set `espbattery_id` to the **CAN**
+bridge ID (`can_bridge` in the dual-bridge example); UART parents are rejected.
+All fields are optional, so include only the entities you need:
+
+```yaml
+sensor:
+  - platform: espbattery
+    espbattery_id: can_bridge
+    voltage:
+      name: "Battery Bank Voltage"
+    current:
+      name: "Battery Bank Current"
+    power:
+      name: "Battery Bank Power"
+    temperature:
+      name: "Battery Bank Temperature"
+    state_of_charge:
+      name: "Battery Bank State of Charge"
+    state_of_health:
+      name: "Battery Bank State of Health"
+    charge_voltage_limit:
+      name: "Battery Bank Charge Voltage Limit"
+    charge_current_limit:
+      name: "Battery Bank Charge Current Limit"
+    discharge_current_limit:
+      name: "Battery Bank Discharge Current Limit"
+    module_count:
+      name: "Battery Bank Module Count"
+    protection_flags:
+      name: "Battery Bank Protection Flags"
+    warning_flags:
+      name: "Battery Bank Warning Flags"
+
+binary_sensor:
+  - platform: espbattery
+    espbattery_id: can_bridge
+    charging_allowed:
+      name: "Battery Bank Charging Allowed"
+    discharging_allowed:
+      name: "Battery Bank Discharging Allowed"
+    protection_active:
+      name: "Battery Bank Protection Active"
+    warning_active:
+      name: "Battery Bank Warning Active"
+
+text_sensor:
+  - platform: espbattery
+    espbattery_id: can_bridge
+    manufacturer:
+      name: "Battery Bank Manufacturer"
+```
+
+Merge these entries into any existing `sensor:`, `binary_sensor:` and
+`text_sensor:` lists; do not create duplicate top-level YAML keys. The
+[complete recliner configuration](esphome/recliner-rs485.md) includes all
+entities and preserves the existing I/O. With `api:` enabled and the device
+added to Home Assistant's ESPHome integration, its configured entities are
+exposed automatically; no MQTT or separate TCP decoder is needed.
+
+| Message | Entities | Units / interpretation |
+| --- | --- | --- |
+| `0x351` | `charge_voltage_limit`, `charge_current_limit`, `discharge_current_limit` | V, A, A; BMS-reported limits, not controls |
+| `0x355` | `state_of_charge`, `state_of_health` | Reported whole percentages |
+| `0x356` | `voltage`, `current`, `temperature`, `power` | V, signed A, signed C; power is **computed** as voltage times current in W |
+| `0x359` | `module_count`, `protection_flags`, `warning_flags`, `protection_active`, `warning_active` | Raw flags combine bytes 0-1 / 2-3 as little-endian 16-bit integers; active means the corresponding value is nonzero |
+| `0x35C` | `charging_allowed`, `discharging_allowed` | Permission bits 7 / 6; status only, not switches |
+| `0x35E` | `manufacturer` | Printable ASCII with trailing spaces/NUL padding removed |
+
+Readings describe the **inverter-facing battery bank**, not separately addressed
+packs. Current polarity is preserved, including in computed power; confirm its
+direction against the battery before relying on charge/discharge automations.
+Unknown CAN IDs, extended-ID frames and remote requests do not update entities.
+Known messages with insufficient data, invalid SOC/SOH (outside 0-100%), or
+invalid manufacturer text log a warning and leave existing states unchanged.
+Documented shorter frame lengths and the observed eight-byte padded frames are
+accepted; unrecognized extension bytes are not interpreted.
+
+Decoding is passive and runs directly on received CAN frames, even with **no
+TCP clients** or with that bridge's **`port: 0`**. Both TCP relays retain their
+existing behavior. No decoding is enabled for a bridge unless entities reference
+it, and no CAN polling or heartbeat is generated. Entities start unknown and
+retain their last valid values if messages stop while ESPHome remains connected;
+they are not a live safety interlock. Numeric entities can use ESPHome's standard
+`filters: [{timeout: 15s}]` to make stale measurements unknown.
+
 ### Component tests
 
 With ESPHome installed, run configuration validation and C++ generation tests:
@@ -272,15 +402,19 @@ With ESPHome installed, run configuration validation and C++ generation tests:
 python -m unittest discover -s tests -p test_espbattery_config.py -v
 ```
 
-The SLCAN parser tests run on a desktop C++17 compiler without ESPHome:
+The SLCAN parser and PYLON decoder tests run on a desktop C++17 compiler
+without ESPHome:
 
 ```sh
 c++ -std=c++17 -Wall -Wextra -Werror tests/slcan_test.cpp -o slcan_test
 ./slcan_test
+c++ -std=c++17 -Wall -Wextra -Werror tests/pylon_test.cpp -o pylon_test
+./pylon_test
 ```
 
 On Windows, run `cl /std:c++17 /EHsc /W4 /WX tests\slcan_test.cpp` from a
-Visual Studio Developer Command Prompt, then run `slcan_test.exe`.
+Visual Studio Developer Command Prompt, then run `slcan_test.exe`. Repeat with
+`tests\pylon_test.cpp` and `pylon_test.exe` for the decoder.
 
 ## Capturing traffic
 

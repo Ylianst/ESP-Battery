@@ -74,7 +74,33 @@ void ESPBatteryComponent::dump_config() {
 	ESP_LOGCONFIG(TAG, "  Address: %s:%u", esphome::network::get_use_address(), this->port_);
 #endif
 	ESP_LOGCONFIG(TAG, "  Buffer Size: %u", (unsigned) this->buf_size_);
+#ifdef USE_ESPBATTERY_PYLON
+	ESP_LOGCONFIG(TAG, "  PYLON decoding: %s", this->pylon_enabled_ ? "enabled" : "disabled");
+#endif
 	LOG_PIN("  Flow Control Pin: ", this->flow_control_pin_);
+#ifdef USE_ESPBATTERY_PYLON_SENSOR
+	LOG_SENSOR("  ", "Voltage", this->voltage_sensor_);
+	LOG_SENSOR("  ", "Current", this->current_sensor_);
+	LOG_SENSOR("  ", "Power", this->power_sensor_);
+	LOG_SENSOR("  ", "Temperature", this->temperature_sensor_);
+	LOG_SENSOR("  ", "State of charge", this->state_of_charge_sensor_);
+	LOG_SENSOR("  ", "State of health", this->state_of_health_sensor_);
+	LOG_SENSOR("  ", "Charge voltage limit", this->charge_voltage_limit_sensor_);
+	LOG_SENSOR("  ", "Charge current limit", this->charge_current_limit_sensor_);
+	LOG_SENSOR("  ", "Discharge current limit", this->discharge_current_limit_sensor_);
+	LOG_SENSOR("  ", "Module count", this->module_count_sensor_);
+	LOG_SENSOR("  ", "Protection flags", this->protection_flags_sensor_);
+	LOG_SENSOR("  ", "Warning flags", this->warning_flags_sensor_);
+#endif
+#ifdef USE_ESPBATTERY_PYLON_BINARY_SENSOR
+	LOG_BINARY_SENSOR("  ", "Charging allowed", this->charging_allowed_binary_sensor_);
+	LOG_BINARY_SENSOR("  ", "Discharging allowed", this->discharging_allowed_binary_sensor_);
+	LOG_BINARY_SENSOR("  ", "Protection active", this->protection_active_binary_sensor_);
+	LOG_BINARY_SENSOR("  ", "Warning active", this->warning_active_binary_sensor_);
+#endif
+#ifdef USE_ESPBATTERY_PYLON_TEXT_SENSOR
+	LOG_TEXT_SENSOR("  ", "Manufacturer", this->manufacturer_text_sensor_);
+#endif
 }
 
 void ESPBatteryComponent::on_shutdown() {
@@ -137,11 +163,22 @@ void ESPBatteryComponent::read() {
 
 #ifdef USE_ESPBATTERY_CAN
 void ESPBatteryComponent::receive_can_(uint32_t id, bool extended, bool remote, const std::vector<uint8_t> &data) {
-	if (this->is_failed() || this->clients_.empty()) return;
+	if (this->is_failed()) return;
 	if (data.size() > 8 || id > (extended ? 0x1FFFFFFFU : 0x7FFU)) {
 		ESP_LOGW(TAG, "Cannot relay invalid classic CAN frame");
 		return;
 	}
+#ifdef USE_ESPBATTERY_PYLON
+	if (this->pylon_enabled_) {
+		PylonMessage message;
+		auto result = decode_pylon(id, extended, remote, data, message);
+		if (result == PylonResult::DECODED)
+			this->publish_pylon_(message);
+		else if (result == PylonResult::INVALID)
+			ESP_LOGW(TAG, "Invalid PYLON CAN frame 0x%03X (%u bytes); sensor states unchanged", (unsigned) id, (unsigned) data.size());
+	}
+#endif
+	if (this->clients_.empty()) return;
 	const std::string line = format_slcan({id, extended, remote, data});
 	if (this->buf_size_ - (this->buf_head_ - this->buf_tail_) < line.size())
 		this->flush();
@@ -160,6 +197,68 @@ void ESPBatteryComponent::receive_can_(uint32_t id, bool extended, bool remote, 
 	}
 	for (char value : line)
 		this->buf_[this->buf_index(this->buf_head_++)] = static_cast<uint8_t>(value);
+}
+#endif
+
+#ifdef USE_ESPBATTERY_PYLON
+#ifdef USE_ESPBATTERY_PYLON_SENSOR
+static void publish_sensor(sensor::Sensor *sensor, float value) {
+	if (sensor != nullptr) sensor->publish_state(value);
+}
+#endif
+#ifdef USE_ESPBATTERY_PYLON_BINARY_SENSOR
+static void publish_binary_sensor(binary_sensor::BinarySensor *sensor, bool value) {
+	if (sensor != nullptr) sensor->publish_state(value);
+}
+#endif
+
+void ESPBatteryComponent::publish_pylon_(const PylonMessage &message) {
+	switch (message.type) {
+		case PylonType::LIMITS:
+#ifdef USE_ESPBATTERY_PYLON_SENSOR
+			publish_sensor(this->charge_voltage_limit_sensor_, message.charge_voltage_limit);
+			publish_sensor(this->charge_current_limit_sensor_, message.charge_current_limit);
+			publish_sensor(this->discharge_current_limit_sensor_, message.discharge_current_limit);
+#endif
+			break;
+		case PylonType::SOC:
+#ifdef USE_ESPBATTERY_PYLON_SENSOR
+			publish_sensor(this->state_of_charge_sensor_, message.state_of_charge);
+			publish_sensor(this->state_of_health_sensor_, message.state_of_health);
+#endif
+			break;
+		case PylonType::MEASUREMENTS:
+#ifdef USE_ESPBATTERY_PYLON_SENSOR
+			publish_sensor(this->voltage_sensor_, message.voltage);
+			publish_sensor(this->current_sensor_, message.current);
+			publish_sensor(this->power_sensor_, message.voltage * message.current);
+			publish_sensor(this->temperature_sensor_, message.temperature);
+#endif
+			break;
+		case PylonType::STATUS:
+#ifdef USE_ESPBATTERY_PYLON_SENSOR
+			publish_sensor(this->module_count_sensor_, message.module_count);
+			publish_sensor(this->protection_flags_sensor_, message.protection_flags);
+			publish_sensor(this->warning_flags_sensor_, message.warning_flags);
+#endif
+#ifdef USE_ESPBATTERY_PYLON_BINARY_SENSOR
+			publish_binary_sensor(this->protection_active_binary_sensor_, message.protection_flags != 0);
+			publish_binary_sensor(this->warning_active_binary_sensor_, message.warning_flags != 0);
+#endif
+			break;
+		case PylonType::PERMISSIONS:
+#ifdef USE_ESPBATTERY_PYLON_BINARY_SENSOR
+			publish_binary_sensor(this->charging_allowed_binary_sensor_, message.charging_allowed);
+			publish_binary_sensor(this->discharging_allowed_binary_sensor_, message.discharging_allowed);
+#endif
+			break;
+		case PylonType::MANUFACTURER:
+#ifdef USE_ESPBATTERY_PYLON_TEXT_SENSOR
+			if (this->manufacturer_text_sensor_ != nullptr)
+				this->manufacturer_text_sensor_->publish_state(message.manufacturer);
+#endif
+			break;
+	}
 }
 #endif
 
