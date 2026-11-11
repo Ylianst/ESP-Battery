@@ -12,6 +12,7 @@
 #endif
 #ifdef USE_ESPBATTERY_PYLON
 #include "pylon.h"
+#include "publish_on_change.h"
 #endif
 #ifdef USE_ESPBATTERY_PYLON_SENSOR
 #include "esphome/components/sensor/sensor.h"

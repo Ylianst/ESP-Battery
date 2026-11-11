@@ -2,6 +2,8 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
 from esphome.const import (
+    CONF_FILTERS,
+    CONF_FORCE_UPDATE,
     DEVICE_CLASS_BATTERY,
     DEVICE_CLASS_CURRENT,
     DEVICE_CLASS_POWER,
@@ -19,6 +21,18 @@ from esphome.const import (
 from . import ESPBATTERY_ENTITY_SCHEMA, pylon_parent, validate_can_entity
 
 DEPENDENCIES = ["espbattery"]
+
+def append_change_filter(config):
+    if not config[CONF_FORCE_UPDATE]:
+        # Keep raw samples flowing through timeout/averaging filters before deduplication.
+        config[CONF_FILTERS] = config.get(CONF_FILTERS, []) + sensor.validate_filters([{
+            "lambda": (
+                "static esphome::espbattery::ChangeDetector<float> changes;\n"
+                "if (!changes.changed(x)) return {};\n"
+                "return x;"
+            ),
+        }])
+    return config
 
 SENSOR_TYPES = {
     "voltage": sensor.sensor_schema(
@@ -72,7 +86,10 @@ SENSOR_TYPES = {
 }
 
 CONFIG_SCHEMA = cv.All(
-    cv.Schema({cv.Optional(key): schema for key, schema in SENSOR_TYPES.items()})
+    cv.Schema({
+        cv.Optional(key): cv.All(schema, append_change_filter)
+        for key, schema in SENSOR_TYPES.items()
+    })
     .extend(ESPBATTERY_ENTITY_SCHEMA),
     cv.has_at_least_one_key(*SENSOR_TYPES),
 )

@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -97,6 +98,7 @@ class ESPBatteryConfigTest(unittest.TestCase):
                 any("canbus_id" not in bridge for bridge in bridges),
             )
             return (source / "main.cpp").read_text(encoding="utf-8")
+        return result.stdout
 
     def test_existing_explicit_uart(self):
         del self.config["canbus"]
@@ -160,6 +162,38 @@ class ESPBatteryConfigTest(unittest.TestCase):
             for key in self.config[domain][0]:
                 if key not in ("platform", "espbattery_id"):
                     self.assertIn(f"can_bridge->set_{key}_{suffix}", generated)
+        self.assertEqual(len(re.findall(r"^\s*static esphome::espbattery::ChangeDetector<float> changes;", generated, re.MULTILINE)), 12)
+        self.assertEqual(len(re.findall(r"^\s*static esphome::espbattery::ChangeDetector<std::string> changes;", generated, re.MULTILINE)), 1)
+
+    def test_change_filter_runs_after_user_filters(self):
+        self.pylon_entities()
+        self.config["sensor"][0]["voltage"]["filters"] = [
+            {"timeout": "15s"}, {"delta": 0.02},
+        ]
+        self.config["text_sensor"][0]["manufacturer"]["filters"] = [{"to_upper": {}}]
+        class Loader(yaml.SafeLoader):
+            pass
+
+        Loader.add_constructor("!lambda", lambda loader, node: loader.construct_scalar(node))
+        validated = yaml.load(self.validate(), Loader=Loader)
+        numeric_filters = validated["sensor"][0]["voltage"]["filters"]
+        self.assertEqual(len(numeric_filters), 3)
+        for config, name in zip(numeric_filters, ("timeout", "delta", "lambda")):
+            self.assertIn(name, config)
+        text_filters = validated["text_sensor"][0]["manufacturer"]["filters"]
+        self.assertEqual(len(text_filters), 2)
+        self.assertIn("to_upper", text_filters[0])
+        self.assertIn("lambda", text_filters[1])
+        generated = self.validate(generate=True)
+        self.assertIn("new sensor::TimeoutFilter", generated)
+        self.assertIn("new sensor::DeltaFilter", generated)
+        self.assertIn("new text_sensor::ToUpperFilter", generated)
+
+    def test_force_update_preserves_repeated_numeric_updates(self):
+        self.pylon_entities()
+        self.config["sensor"][0]["voltage"]["force_update"] = True
+        generated = self.validate(generate=True)
+        self.assertEqual(len(re.findall(r"^\s*static esphome::espbattery::ChangeDetector<float> changes;", generated, re.MULTILINE)), 11)
 
     def test_pylon_entity_platforms_independently_without_tcp(self):
         del self.config["uart"]

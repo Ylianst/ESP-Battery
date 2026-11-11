@@ -394,6 +394,48 @@ retain their last valid values if messages stop while ESPHome remains connected;
 they are not a live safety interlock. Numeric entities can use ESPHome's standard
 `filters: [{timeout: 15s}]` to make stale measurements unknown.
 
+#### Publishing only changed values
+
+Numeric and manufacturer entities publish their **first filtered value**, then
+only when that value changes. Repeated NaN/unknown states are also suppressed,
+but a transition to unknown and recovery to the same previous reading are
+published. Binary entities already use ESPHome's change-only behavior, so alarm
+and permission changes remain immediate unless you explicitly add delaying
+filters.
+
+CAN decoding, TCP forwarding, raw-value callbacks and your configured filters
+still receive every sample. The component appends deduplication **after** user
+filters, so stable incoming readings continue to refresh a timeout. No polling
+rate or fixed publication interval is imposed: genuinely changing values can
+still update quickly.
+
+For noisy measurements, optionally configure a small delta threshold. Put a
+freshness timeout **before** delta/throttle filters, so suppressed but regularly
+received samples do not incorrectly become stale:
+
+```yaml
+sensor:
+  - platform: espbattery
+    espbattery_id: can_bridge
+    voltage:
+      name: "Battery Bank Voltage"
+      filters:
+        - timeout: 15s
+        - delta: 0.02
+    current:
+      name: "Battery Bank Current"
+      filters:
+        - timeout: 15s
+        - delta: 0.2
+```
+
+These example thresholds are **0.02 V** and **0.2 A**; they are not defaults.
+Without them, every distinct filtered numeric value is published. Add the
+filters to your existing entries rather than creating duplicate entities.
+For a numeric entity that deliberately needs repeated updates (for example,
+an explicit heartbeat filter), set **`force_update: true`** to skip the
+component's final change-only filter.
+
 ### Component tests
 
 With ESPHome installed, run configuration validation and C++ generation tests:
@@ -402,7 +444,7 @@ With ESPHome installed, run configuration validation and C++ generation tests:
 python -m unittest discover -s tests -p test_espbattery_config.py -v
 ```
 
-The SLCAN parser and PYLON decoder tests run on a desktop C++17 compiler
+The SLCAN parser, PYLON decoder and change-only publishing tests run on a desktop C++17 compiler
 without ESPHome:
 
 ```sh
@@ -410,11 +452,14 @@ c++ -std=c++17 -Wall -Wextra -Werror tests/slcan_test.cpp -o slcan_test
 ./slcan_test
 c++ -std=c++17 -Wall -Wextra -Werror tests/pylon_test.cpp -o pylon_test
 ./pylon_test
+c++ -std=c++17 -Wall -Wextra -Werror tests/publish_on_change_test.cpp -o publish_on_change_test
+./publish_on_change_test
 ```
 
 On Windows, run `cl /std:c++17 /EHsc /W4 /WX tests\slcan_test.cpp` from a
 Visual Studio Developer Command Prompt, then run `slcan_test.exe`. Repeat with
-`tests\pylon_test.cpp` and `pylon_test.exe` for the decoder.
+`tests\pylon_test.cpp` / `pylon_test.exe` for the decoder and
+`tests\publish_on_change_test.cpp` / `publish_on_change_test.exe` for publishing.
 
 ## Capturing traffic
 

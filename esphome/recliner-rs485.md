@@ -32,7 +32,7 @@ psram:
 # ==========================================================
 logger:
   baud_rate: 0
-  level: WARN
+  level: ERROR
 
 api:
   encryption:
