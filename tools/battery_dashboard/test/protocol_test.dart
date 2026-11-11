@@ -113,6 +113,54 @@ void main() {
   });
 
   test(
+    'accepts version 20 measurement and short unknown-status warning replies',
+    () {
+      final protocol = BatteryProtocol();
+      feed(protocol, makeFrame(0x42, payload: '02'));
+      final measured = feed(
+        protocol,
+        makeFrame(0, version: 0x20, payload: hexBytes(measurementPayload())),
+      ).single;
+      expect(measured.measurements!.voltage, 53.599);
+      feed(protocol, makeFrame(0x44, payload: '02'));
+      final warning = feed(
+        protocol,
+        makeFrame(
+          0,
+          version: 0x20,
+          payload: hexBytes(warningPayload().sublist(0, 34)),
+        ),
+      ).single.warnings!;
+      expect(warning.registers, hasLength(8));
+      expect(
+        warning.registers.keys.every((key) => key.startsWith('Raw status')),
+        isTrue,
+      );
+      expect(warning.nonzeroWarnings, 0);
+    },
+  );
+
+  test('active matching uses the configured deadline and handles error 90', () {
+    final protocol = BatteryProtocol(
+      responseTimeout: const Duration(seconds: 8),
+    );
+    feed(protocol, makeFrame(0x42, payload: '02'));
+    expect(
+      feed(
+        protocol,
+        makeFrame(0, payload: hexBytes(measurementPayload())),
+        at: now.add(const Duration(seconds: 6)),
+      ).single.measurements,
+      isNotNull,
+    );
+    feed(protocol, makeFrame(0x44, payload: '02'));
+    final error = feed(protocol, makeFrame(0x90)).single;
+    expect(error.response, isTrue);
+    expect(error.command, 0x44);
+    expect(error.issue, contains('returned error'));
+  });
+
+  test(
     'preserves unknown commands, unsupported versions and error replies',
     () {
       final protocol = BatteryProtocol();
@@ -120,7 +168,7 @@ void main() {
       expect(unknown.description, contains('unknown command'));
       expect(unknown.raw, contains('1234'));
       expect(
-        feed(protocol, makeFrame(0x42, version: 0x20)).single.issue,
+        feed(protocol, makeFrame(0x42, version: 0x21)).single.issue,
         contains('Unsupported'),
       );
       expect(

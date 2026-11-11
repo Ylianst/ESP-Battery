@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'battery_connection.dart';
 import 'charts.dart';
 import 'protocol.dart';
+import 'polling.dart';
 
 void main() => runApp(const BatteryDashboard());
 
@@ -67,6 +68,9 @@ class _DashboardPageState extends State<DashboardPage> {
   late final BatteryConnection connection;
   final _host = TextEditingController(text: 'sunpower.local');
   final _port = TextEditingController(text: '1234');
+  final _addresses = TextEditingController(text: '1,2,3,4');
+  bool _pollingEnabled = false;
+  PollingProtocol _pollingProtocol = PollingProtocol.modbus;
   final _form = GlobalKey<FormState>();
 
   @override
@@ -80,12 +84,28 @@ class _DashboardPageState extends State<DashboardPage> {
     if (widget.connection == null) connection.dispose();
     _host.dispose();
     _port.dispose();
+    _addresses.dispose();
     super.dispose();
   }
 
   void _connect() {
     if (_form.currentState!.validate()) {
-      unawaited(connection.connect(_host.text.trim(), int.parse(_port.text)));
+      final polling = _pollingEnabled
+          ? PollingSettings(
+              protocol: _pollingProtocol,
+              addresses: PollingSettings.parseAddresses(
+                _addresses.text,
+                _pollingProtocol,
+              ),
+            )
+          : null;
+      unawaited(
+        connection.connect(
+          _host.text.trim(),
+          int.parse(_port.text),
+          polling: polling,
+        ),
+      );
     }
   }
 
@@ -149,7 +169,7 @@ class _DashboardPageState extends State<DashboardPage> {
                                 averageSoc == null
                                     ? '--'
                                     : '${averageSoc.toStringAsFixed(1)}%',
-                                'Calculated from capacities',
+                                'Reported / calculated by protocol',
                                 Icons.donut_large_rounded,
                                 violet,
                                 width,
@@ -218,7 +238,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       _trafficPanel(),
                       const SizedBox(height: 20),
                       const Text(
-                        'READ-ONLY MONITOR  /  PACE 25 EXPERIMENTAL DECODER  /  NO COMMANDS SENT',
+                        'READ-ONLY TELEMETRY  /  ASCII PACE + MODBUS RTU  /  OPTIONAL ACTIVE POLLING',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: muted,
@@ -339,93 +359,99 @@ class _DashboardPageState extends State<DashboardPage> {
           const SizedBox(height: 18),
           Form(
             key: _form,
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final host = TextFormField(
-                  controller: _host,
-                  enabled: !busy,
-                  decoration: const InputDecoration(
-                    labelText: 'Hostname or IP address',
-                    prefixIcon: Icon(Icons.dns_outlined),
-                  ),
-                  autocorrect: false,
-                  validator: (value) {
-                    final text = value?.trim() ?? '';
-                    if (text.isEmpty || RegExp(r'\s|/').hasMatch(text)) {
-                      return 'Enter a hostname or IP (no URL or port)';
-                    }
-                    return null;
-                  },
-                  onFieldSubmitted: (_) => _connect(),
-                );
-                final port = TextFormField(
-                  controller: _port,
-                  enabled: !busy,
-                  decoration: const InputDecoration(labelText: 'TCP port'),
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  validator: (value) {
-                    final number = int.tryParse(value ?? '');
-                    return number == null || number < 1 || number > 65535
-                        ? 'Use 1 - 65535'
-                        : null;
-                  },
-                  onFieldSubmitted: (_) => _connect(),
-                );
-                final button = SizedBox(
-                  height: 54,
-                  child: FilledButton.icon(
-                    onPressed: busy ? connection.disconnect : _connect,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: busy
-                          ? Colors.white.withValues(alpha: 0.1)
-                          : mint,
-                      foregroundColor: busy ? Colors.white : canvasColor,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+            child: Column(
+              children: [
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final host = TextFormField(
+                      controller: _host,
+                      enabled: !busy,
+                      decoration: const InputDecoration(
+                        labelText: 'Hostname or IP address',
+                        prefixIcon: Icon(Icons.dns_outlined),
                       ),
-                    ),
-                    icon: Icon(
-                      busy
-                          ? Icons.link_off_rounded
-                          : Icons.power_settings_new_rounded,
-                    ),
-                    label: Text(
-                      connecting
-                          ? 'Cancel'
-                          : connection.connected
-                          ? 'Disconnect'
-                          : 'Connect',
-                    ),
-                  ),
-                );
-                if (constraints.maxWidth < 620) {
-                  return Column(
-                    children: [
-                      host,
-                      const SizedBox(height: 12),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      autocorrect: false,
+                      validator: (value) {
+                        final text = value?.trim() ?? '';
+                        if (text.isEmpty || RegExp(r'\s|/').hasMatch(text)) {
+                          return 'Enter a hostname or IP (no URL or port)';
+                        }
+                        return null;
+                      },
+                      onFieldSubmitted: (_) => _connect(),
+                    );
+                    final port = TextFormField(
+                      controller: _port,
+                      enabled: !busy,
+                      decoration: const InputDecoration(labelText: 'TCP port'),
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      validator: (value) {
+                        final number = int.tryParse(value ?? '');
+                        return number == null || number < 1 || number > 65535
+                            ? 'Use 1 - 65535'
+                            : null;
+                      },
+                      onFieldSubmitted: (_) => _connect(),
+                    );
+                    final button = SizedBox(
+                      height: 54,
+                      child: FilledButton.icon(
+                        onPressed: busy ? connection.disconnect : _connect,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: busy
+                              ? Colors.white.withValues(alpha: 0.1)
+                              : mint,
+                          foregroundColor: busy ? Colors.white : canvasColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        icon: Icon(
+                          busy
+                              ? Icons.link_off_rounded
+                              : Icons.power_settings_new_rounded,
+                        ),
+                        label: Text(
+                          connecting
+                              ? 'Cancel'
+                              : connection.connected
+                              ? 'Disconnect'
+                              : 'Connect',
+                        ),
+                      ),
+                    );
+                    if (constraints.maxWidth < 620) {
+                      return Column(
                         children: [
-                          Expanded(child: port),
-                          const SizedBox(width: 12),
-                          SizedBox(width: 150, child: button),
+                          host,
+                          const SizedBox(height: 12),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(child: port),
+                              const SizedBox(width: 12),
+                              SizedBox(width: 150, child: button),
+                            ],
+                          ),
                         ],
-                      ),
-                    ],
-                  );
-                }
-                return Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: host),
-                    const SizedBox(width: 12),
-                    SizedBox(width: 140, child: port),
-                    const SizedBox(width: 12),
-                    SizedBox(width: 164, child: button),
-                  ],
-                );
-              },
+                      );
+                    }
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(child: host),
+                        const SizedBox(width: 12),
+                        SizedBox(width: 140, child: port),
+                        const SizedBox(width: 12),
+                        SizedBox(width: 164, child: button),
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _pollingControls(busy),
+              ],
             ),
           ),
           const SizedBox(height: 14),
@@ -453,6 +479,77 @@ class _DashboardPageState extends State<DashboardPage> {
       ),
     );
   }
+
+  Widget _pollingControls(bool busy) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Material(
+        color: Colors.transparent,
+        child: SwitchListTile(
+          key: const Key('enable-polling'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Enable active polling'),
+          subtitle: const Text('Off: passive monitor, sends no bytes.'),
+          value: _pollingEnabled,
+          onChanged: busy
+              ? null
+              : (value) => setState(() => _pollingEnabled = value),
+        ),
+      ),
+      if (_pollingEnabled) ...[
+        const SizedBox(height: 8),
+        DropdownButtonFormField<PollingProtocol>(
+          key: const Key('polling-protocol'),
+          initialValue: _pollingProtocol,
+          decoration: const InputDecoration(labelText: 'Polling protocol'),
+          items: const [
+            DropdownMenuItem(
+              value: PollingProtocol.modbus,
+              child: Text('Modbus RTU (PACE register map)'),
+            ),
+            DropdownMenuItem(
+              value: PollingProtocol.pace,
+              child: Text('ASCII PACE (25 / 20 replies)'),
+            ),
+          ],
+          onChanged: busy
+              ? null
+              : (value) {
+                  if (value != null) setState(() => _pollingProtocol = value);
+                },
+          isExpanded: true,
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
+          key: const Key('polling-addresses'),
+          controller: _addresses,
+          enabled: !busy,
+          decoration: InputDecoration(
+            labelText: 'Battery addresses',
+            helperText: _pollingProtocol == PollingProtocol.modbus
+                ? 'Comma-separated slaves 1-247; no broadcast address 0'
+                : 'Comma-separated addresses 0-15; individual pack reads',
+          ),
+          validator: (value) {
+            try {
+              PollingSettings.parseAddresses(value ?? '', _pollingProtocol);
+              return null;
+            } on FormatException catch (error) {
+              return error.message;
+            }
+          },
+          onFieldSubmitted: (_) => _connect(),
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'Read-only requests, one at a time. Stop other polling masters on this RS485 bus. '
+          'Modbus requires the matching battery inverter protocol; ASCII PACE is different. '
+          'Disconnect before changing these options.',
+          style: TextStyle(color: amber, fontSize: 12),
+        ),
+      ],
+    ],
+  );
 
   Widget _summary(
     String title,
@@ -525,7 +622,9 @@ class _DashboardPageState extends State<DashboardPage> {
             constraints: const BoxConstraints(maxWidth: 500),
             child: Text(
               connection.connected
-                  ? 'Waiting for complete request/reply pairs. The bus must already be polled by an inverter or another controller. Address scans alone will not add batteries.'
+                  ? connection.polling == null
+                        ? 'Waiting for complete request/reply pairs. The bus must already be polled by an inverter or another controller. Address scans alone will not add batteries.'
+                        : 'Polling the selected addresses. Only validated replies add batteries. Check the traffic inspector for timeouts, protocol errors or incomplete telemetry.'
                   : 'Connect to the ESP32 bridge to discover responding packs and explore cell voltages, temperatures, capacities and status.',
               textAlign: TextAlign.center,
               style: const TextStyle(color: muted, height: 1.6, fontSize: 13),
@@ -551,7 +650,7 @@ class _DashboardPageState extends State<DashboardPage> {
       childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       children: [
         const Text(
-          'Unknown payloads and corrupt frames remain visible here. A reply is associated with the latest request for that address within 5 seconds.',
+          'Unknown payloads and corrupt frames remain visible here. Active polling sends one read at a time with a 2-second response timeout; passive ASCII matching uses 5 seconds.',
           style: TextStyle(color: muted, fontSize: 12),
         ),
         const SizedBox(height: 12),
@@ -614,6 +713,9 @@ class BatteryCard extends StatelessWidget {
     final fresh = battery.fresh(now, connected);
     final warningsFresh = battery.warningsFresh(now, connected);
     final warning = battery.warnings;
+    final modbus =
+        data?.source == MeasurementSource.modbus ||
+        warning?.source == MeasurementSource.modbus;
     return _Panel(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -722,7 +824,12 @@ class BatteryCard extends StatelessWidget {
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Center(child: SocGauge(value: data.soc)),
+                      Center(
+                        child: SocGauge(
+                          value: data.soc,
+                          reported: data.reportedSoc != null,
+                        ),
+                      ),
                       const SizedBox(height: 20),
                       metrics,
                     ],
@@ -732,15 +839,20 @@ class BatteryCard extends StatelessWidget {
                   children: [
                     Expanded(child: metrics),
                     const SizedBox(width: 24),
-                    SocGauge(value: data.soc),
+                    SocGauge(
+                      value: data.soc,
+                      reported: data.reportedSoc != null,
+                    ),
                   ],
                 );
               },
             ),
             const SizedBox(height: 12),
-            const Text(
-              'SOC = remaining / full capacity. Current polarity and vendor-specific fields are not inferred.',
-              style: TextStyle(color: muted, fontSize: 10),
+            Text(
+              data.reportedSoc == null
+                  ? 'SOC = remaining / full capacity. Current polarity and vendor-specific fields are not inferred.'
+                  : 'SOC is reported by the battery via Modbus, not calculated from capacity. Current is signed.',
+              style: const TextStyle(color: muted, fontSize: 10),
             ),
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 12),
@@ -757,6 +869,9 @@ class BatteryCard extends StatelessWidget {
                   children: [
                     TemperatureChart(
                       values: data.temperatures,
+                      labels: data.source == MeasurementSource.modbus
+                          ? const ['Battery 1', 'Battery 2', 'Battery 3', 'Battery 4', 'MOSFET', 'Environment']
+                          : null,
                       warningCodes: warningsFresh
                           ? warning!.temperatures
                           : const [],
@@ -793,13 +908,15 @@ class BatteryCard extends StatelessWidget {
             expandedCrossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'PACE 25 / CID1 0x46 / pack number field: ${battery.packNumber ?? 'not observed'}',
+                modbus
+                    ? 'Modbus RTU / function 03 / PACE holding-register map'
+                    : 'PACE 20/25 / CID1 0x46 / pack number field: ${battery.packNumber ?? 'not observed'}',
                 style: const TextStyle(color: muted, fontSize: 11),
               ),
-              if (data != null) ...[
+              if (data != null && data.source == MeasurementSource.pace) ...[
                 const SizedBox(height: 8),
                 SelectableText(
-                  'Measurement flag 0x${hexByte(data.flag)} / pack 0x${hexByte(data.pack)} / extra marker 0x${hexByte(data.extraMarker)}',
+                  'Measurement flag ${_hexField(data.flag)} / pack 0x${hexByte(data.pack)} / extra marker ${_hexField(data.extraMarker)}',
                   style: const TextStyle(fontSize: 11, color: muted),
                 ),
                 const SizedBox(height: 4),
@@ -812,17 +929,31 @@ class BatteryCard extends StatelessWidget {
                   ),
                 ),
               ],
-              if (warning != null) ...[
+              if (data != null && data.source == MeasurementSource.modbus) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Reported SOH: ${data.reportedSoh?.toStringAsFixed(0) ?? 'not provided'}% / design capacity: ${data.designAh?.toStringAsFixed(2) ?? 'not provided'} Ah',
+                  style: const TextStyle(color: muted, fontSize: 11),
+                ),
+                const Text(
+                  'Temperature order: battery 1-4, MOSFET, environment. No per-cell warning codes are provided by this register map.',
+                  style: TextStyle(color: muted, fontSize: 11),
+                ),
+              ],
+              if (warning != null &&
+                  warning.source == MeasurementSource.pace) ...[
                 const SizedBox(height: 8),
                 SelectableText(
-                  'Warning flag 0x${hexByte(warning.flag)} / pack 0x${hexByte(warning.pack)} / extension: ${warning.extension.isEmpty ? '(empty)' : warning.extension}',
+                  'Warning flag ${_hexField(warning.flag)} / pack 0x${hexByte(warning.pack)} / extension: ${warning.extension.isEmpty ? '(empty)' : warning.extension}',
                   style: const TextStyle(fontSize: 11, color: muted),
                 ),
               ],
               const SizedBox(height: 8),
-              const Text(
-                'Latest validated reply (ASCII)',
-                style: TextStyle(color: muted, fontSize: 11),
+              Text(
+                modbus
+                    ? 'Latest validated reply (RTU hex)'
+                    : 'Latest validated reply (ASCII)',
+                style: const TextStyle(color: muted, fontSize: 11),
               ),
               const SizedBox(height: 4),
               SelectableText(
@@ -909,7 +1040,7 @@ class BatteryCard extends StatelessWidget {
           ),
         ),
         subtitle: Text(
-          warnings == null ? 'Waiting for a 0x44 reply' : 'Raw warning codes and status registers / not a safety assessment',
+          warnings == null ? 'Waiting for a warning/status reply' : 'Raw warning codes and status registers / not a safety assessment',
           style: const TextStyle(color: muted, fontSize: 10),
         ),
         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -932,12 +1063,12 @@ class BatteryCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 SelectableText(
-                  'Cell warning codes: ${warnings.cells.map((code) => '0x${hexByte(code)}').join(', ')}',
+                  'Cell warning codes: ${warnings.cells.isEmpty ? 'not provided' : warnings.cells.map((code) => '0x${hexByte(code)}').join(', ')}',
                   style: const TextStyle(color: muted, fontSize: 11),
                 ),
                 const SizedBox(height: 6),
                 SelectableText(
-                  'Temperature warning codes: ${warnings.temperatures.map((code) => '0x${hexByte(code)}').join(', ')}',
+                  'Temperature warning codes: ${warnings.temperatures.isEmpty ? 'not provided' : warnings.temperatures.map((code) => '0x${hexByte(code)}').join(', ')}',
                   style: const TextStyle(color: muted, fontSize: 11),
                 ),
               ],
@@ -1033,3 +1164,6 @@ String _visible(String text) => text.replaceAllMapped(
   RegExp(r'[^\x20-\x7e]'),
   (match) => '\\x${hexByte(match[0]!.codeUnitAt(0))}',
 );
+
+String _hexField(int? value) =>
+    value == null ? 'not provided' : '0x${hexByte(value)}';

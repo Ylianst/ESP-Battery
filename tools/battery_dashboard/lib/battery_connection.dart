@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'protocol.dart';
+import 'polling.dart';
 
 enum LinkState { disconnected, connecting, connected }
 
@@ -64,9 +65,16 @@ class BatteryConnection extends ChangeNotifier {
   StreamSubscription<List<int>>? _subscription;
   Timer? _timer;
   BatteryProtocol _protocol = BatteryProtocol();
+  ModbusProtocol? _modbus;
+  PollingSettings? _polling;
+  List<PollRequest> _requests = [];
+  PollRequest? _pendingPoll;
+  Timer? _pollTimer;
+  int _pollIndex = 0;
   int _generation = 0;
 
   bool get connected => state == LinkState.connected;
+  PollingSettings? get polling => _polling;
 
   void _log(String text, {String raw = '', bool issue = false}) {
     traffic.insert(
@@ -76,7 +84,11 @@ class BatteryConnection extends ChangeNotifier {
     if (traffic.length > 80) traffic.removeLast();
   }
 
-  Future<void> connect(String host, int port) async {
+  Future<void> connect(
+    String host,
+    int port, {
+    PollingSettings? polling,
+  }) async {
     if (host.trim().isEmpty || port < 1 || port > 65535) {
       message = 'Enter a hostname and a port between 1 and 65535.';
       _log(message, issue: true);
@@ -84,6 +96,15 @@ class BatteryConnection extends ChangeNotifier {
       return;
     }
     _close();
+    _polling = polling;
+    _requests = polling?.requests ?? [];
+    _pollIndex = 0;
+    _protocol = BatteryProtocol(
+      responseTimeout: polling?.responseTimeout ?? const Duration(seconds: 5),
+    );
+    if (polling?.protocol == PollingProtocol.modbus) {
+      _modbus = ModbusProtocol(responseTimeout: polling!.responseTimeout);
+    }
     final attempt = _generation;
     batteries.clear();
     traffic.clear();
@@ -108,8 +129,17 @@ class BatteryConnection extends ChangeNotifier {
       }
       _socket = socket;
       state = LinkState.connected;
-      message = 'Listening for battery replies';
-      _log('Connected to $endpoint (read-only)');
+      message = polling == null
+          ? 'Listening for battery replies (passive; no bytes sent)'
+          : 'Polling ${polling.protocol == PollingProtocol.modbus ? 'Modbus RTU' : 'ASCII PACE'} addresses ${polling.addresses.join(', ')}';
+      _log(
+        'Connected to $endpoint (${polling == null ? 'passive' : 'active read-only polling'})',
+      );
+      if (polling != null) {
+        _log(
+          'Only one polling master may use this RS485 bus. No control/write commands are sent.',
+        );
+      }
       _timer = Timer.periodic(
         const Duration(seconds: 1),
         (_) => notifyListeners(),
@@ -120,35 +150,11 @@ class BatteryConnection extends ChangeNotifier {
           final now = DateTime.now();
           lastTrafficAt = now;
           receivedBytes += data.length;
-          for (final event in _protocol.add(data, at: now)) {
-            if (event.valid) validFrames++;
-            if (event.issue != null) issues++;
-            _log(
-              event.issue ?? event.description,
-              raw: event.raw,
-              issue: event.issue != null,
-            );
-            // Address scans are requests, not evidence that a battery exists.
-            if (!event.response || !event.valid || event.address == null) {
-              continue;
-            }
-            final battery = batteries.putIfAbsent(
-              event.address!,
-              () => BatteryState(event.address!),
-            );
-            battery.lastSeen = now;
-            battery.lastFrame = event.raw;
-            if (event.measurements case final measurements?) {
-              battery.measurements = measurements;
-              battery.measurementAt = now;
-              battery.history.add(VoltageSample(now, measurements.voltage));
-              if (battery.history.length > 120) battery.history.removeAt(0);
-            }
-            if (event.warnings case final warnings?) {
-              battery.warnings = warnings;
-              battery.warningsAt = now;
-            }
-            if (event.packNumber != null) battery.packNumber = event.packNumber;
+          final events =
+              _modbus?.add(data, at: now) ?? _protocol.add(data, at: now);
+          for (final event in events) {
+            _record(event, now);
+            if (_pendingPoll?.matches(event) ?? false) _advancePoll();
           }
           notifyListeners();
         },
@@ -168,6 +174,7 @@ class BatteryConnection extends ChangeNotifier {
         },
         cancelOnError: true,
       );
+      if (polling != null) _sendPoll();
       notifyListeners();
     } on SocketException catch (error) {
       _connectFailed(attempt, 'Cannot connect to $endpoint: ${error.message}');
@@ -176,6 +183,83 @@ class BatteryConnection extends ChangeNotifier {
         attempt,
         'Connection to $endpoint timed out after 10 seconds.',
       );
+    }
+  }
+
+  void _record(ProtocolEvent event, DateTime now) {
+    if (event.valid) validFrames++;
+    if (event.issue != null) issues++;
+    _log(
+      event.issue ?? event.description,
+      raw: event.raw,
+      issue: event.issue != null,
+    );
+    // Requests and unmatched Modbus traffic are not proof of a battery.
+    if (!event.response || !event.valid || event.address == null) return;
+    final battery = batteries.putIfAbsent(
+      event.address!,
+      () => BatteryState(event.address!),
+    );
+    battery.lastSeen = now;
+    battery.lastFrame = event.raw;
+    if (event.measurements case final measurements?) {
+      battery.measurements = measurements;
+      battery.measurementAt = now;
+      battery.history.add(VoltageSample(now, measurements.voltage));
+      if (battery.history.length > 120) battery.history.removeAt(0);
+    }
+    if (event.warnings case final warnings?) {
+      battery.warnings = warnings;
+      battery.warningsAt = now;
+    }
+    if (event.packNumber != null) battery.packNumber = event.packNumber;
+  }
+
+  void _advancePoll() {
+    _pollTimer?.cancel();
+    _pendingPoll = null;
+    _pollIndex = (_pollIndex + 1) % _requests.length;
+    _pollTimer = Timer(_polling!.requestDelay, _sendPoll);
+  }
+
+  void _sendPoll() {
+    final socket = _socket;
+    final settings = _polling;
+    if (!connected || socket == null || settings == null) return;
+    final request = _requests[_pollIndex];
+    final now = DateTime.now();
+    _pendingPoll = request;
+    if (_modbus case final modbus?) {
+      final partial = modbus.expect(request, now);
+      if (partial != null) _record(partial, now);
+    } else {
+      // TCP writes are not echoed by the bridge; seed request correlation locally.
+      _protocol.add(request.bytes, at: now);
+    }
+    _log(
+      'TX ${request.description}',
+      raw: settings.protocol == PollingProtocol.pace
+          ? String.fromCharCodes(request.bytes)
+          : hexBytes(request.bytes),
+    );
+    final generation = _generation;
+    _pollTimer = Timer(settings.responseTimeout, () {
+      if (generation != _generation || _pendingPoll != request) return;
+      issues++;
+      message =
+          '${request.description}: no reply within ${settings.responseTimeout.inMilliseconds} ms; polling continues.';
+      _log(message, issue: true);
+      final partial = _modbus?.finish();
+      if (partial != null) _record(partial, DateTime.now());
+      _advancePoll();
+      notifyListeners();
+    });
+    try {
+      socket.add(request.bytes);
+    } on SocketException catch (error) {
+      _connectFailed(generation, 'Polling write failed: ${error.message}');
+    } on StateError catch (error) {
+      _connectFailed(generation, 'Polling write failed: $error');
     }
   }
 
@@ -199,6 +283,11 @@ class BatteryConnection extends ChangeNotifier {
     _generation++;
     _timer?.cancel();
     _timer = null;
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    _pendingPoll = null;
+    _requests = [];
+    _polling = null;
     unawaited(_subscription?.cancel());
     _subscription = null;
     _socket?.destroy();
@@ -209,6 +298,12 @@ class BatteryConnection extends ChangeNotifier {
       _log(partial.description, raw: partial.raw, issue: true);
     }
     _protocol = BatteryProtocol();
+    final modbusPartial = _modbus?.finish();
+    if (modbusPartial != null) {
+      issues++;
+      _log(modbusPartial.description, raw: modbusPartial.raw, issue: true);
+    }
+    _modbus = null;
     state = LinkState.disconnected;
   }
 

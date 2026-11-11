@@ -2,6 +2,22 @@ import 'dart:typed_data';
 
 import 'package:battery_dashboard/battery_connection.dart';
 import 'package:battery_dashboard/protocol.dart';
+import 'package:battery_dashboard/polling.dart';
+
+const modbusBasic = '010310000014e3004800641bcb271027100001595a';
+const modbusStatus = '010308000000000c0000009687';
+const modbusCells =
+    '01032c0d160d130d110d0f0d0c0d100d100d120d0e0d130d130cfc0d0f0cff0d100d1200b100af00b000af00c600b8ac1a';
+
+Uint8List bytesFromHex(String text) => Uint8List.fromList([
+  for (var i = 0; i < text.length; i += 2)
+    int.parse(text.substring(i, i + 2), radix: 16),
+]);
+
+Uint8List modbusFrame(List<int> body) {
+  final crc = modbusCrc(body);
+  return Uint8List.fromList([...body, crc & 255, crc >> 8]);
+}
 
 String makeFrame(
   int code, {

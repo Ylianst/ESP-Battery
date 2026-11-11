@@ -25,6 +25,8 @@ const statusNames = [
   'Warning 2',
 ];
 
+enum MeasurementSource { pace, modbus }
+
 class Measurements {
   Measurements({
     required this.cells,
@@ -38,6 +40,10 @@ class Measurements {
     required this.pack,
     required this.extraMarker,
     required this.extension,
+    this.source = MeasurementSource.pace,
+    this.reportedSoc,
+    this.reportedSoh,
+    this.designAh,
   });
 
   final List<double> cells;
@@ -47,12 +53,17 @@ class Measurements {
   final double remainingAh;
   final double fullAh;
   final int cycles;
-  final int flag;
+  final int? flag;
   final int pack;
-  final int extraMarker;
+  final int? extraMarker;
   final String extension;
+  final MeasurementSource source;
+  final double? reportedSoc;
+  final double? reportedSoh;
+  final double? designAh;
 
-  double? get soc => fullAh > 0 ? remainingAh / fullAh * 100 : null;
+  double? get soc =>
+      reportedSoc ?? (fullAh > 0 ? remainingAh / fullAh * 100 : null);
   double get power => voltage * current;
   double get minCell => cells.reduce((a, b) => a < b ? a : b);
   double get maxCell => cells.reduce((a, b) => a > b ? a : b);
@@ -115,14 +126,16 @@ class BatteryWarnings {
     required this.flag,
     required this.pack,
     required this.extension,
+    this.source = MeasurementSource.pace,
   });
 
   final List<int> cells;
   final List<int> temperatures;
   final Map<String, int> registers;
-  final int flag;
+  final int? flag;
   final int pack;
   final String extension;
+  final MeasurementSource source;
 
   // Instruction, control and balancing bits are not themselves alarms.
   int get nonzeroWarnings =>
@@ -136,12 +149,19 @@ class BatteryWarnings {
                   'Control',
                   'Balance 1',
                   'Balance 2',
+                  'Status/fault',
+                  'Balance',
                 ].contains(entry.key) &&
+                !entry.key.startsWith('Raw status ') &&
                 entry.value != 0,
           )
           .length;
 
-  factory BatteryWarnings.parse(Uint8List info, int address) {
+  factory BatteryWarnings.parse(
+    Uint8List info,
+    int address, {
+    int version = 0x25,
+  }) {
     final reader = _PayloadReader(info);
     final flag = reader.byte();
     final pack = reader.byte();
@@ -160,7 +180,10 @@ class BatteryWarnings {
       throw FormatException('Invalid warning temperature count: $tempCount');
     }
     final temperatures = List.generate(tempCount, (_) => reader.byte());
-    final registers = {for (final name in statusNames) name: reader.byte()};
+    final names = version == 0x20
+        ? List.generate(8, (index) => 'Raw status ${index + 1}')
+        : statusNames;
+    final registers = {for (final name in names) name: reader.byte()};
     return BatteryWarnings(
       cells: List.unmodifiable(cells),
       temperatures: List.unmodifiable(temperatures),
@@ -200,6 +223,7 @@ class ProtocolEvent {
     this.measurements,
     this.warnings,
     this.packNumber,
+    this.registerStart,
   });
 
   final String description;
@@ -212,6 +236,7 @@ class ProtocolEvent {
   final Measurements? measurements;
   final BatteryWarnings? warnings;
   final int? packNumber;
+  final int? registerStart;
 }
 
 class _Pending {
@@ -221,6 +246,8 @@ class _Pending {
 }
 
 class BatteryProtocol {
+  BatteryProtocol({this.responseTimeout = const Duration(seconds: 5)});
+  final Duration responseTimeout;
   String _frame = '';
   final Map<int, _Pending> _pending = {};
 
@@ -298,7 +325,7 @@ class BatteryProtocol {
       final info = Uint8List.fromList(
         List.generate(infoLength ~/ 2, (i) => field(12 + i * 2, 14 + i * 2)),
       );
-      if (version != 0x25 || type != 0x46) {
+      if ((version != 0x25 && version != 0x20) || type != 0x46) {
         return _issue(
           'Unsupported protocol ${hexByte(version)}/CID1 ${hexByte(type)}',
           raw,
@@ -306,7 +333,10 @@ class BatteryProtocol {
       }
       final pending = _pending[address];
       final response =
-          code <= 0x0f || (code == 0x90 && info.isNotEmpty && pending != null);
+          code <= 0x0f ||
+          (code == 0x90 &&
+              pending != null &&
+              (pending.command != 0x90 || info.isNotEmpty));
       if (!response) {
         _pending[address] = _Pending(code, at);
         return ProtocolEvent(
@@ -322,7 +352,7 @@ class BatteryProtocol {
       final matched =
           pending != null &&
           !at.isBefore(pending.at) &&
-          at.difference(pending.at) <= const Duration(seconds: 5);
+          at.difference(pending.at) <= responseTimeout;
       final command = matched ? pending.command : null;
       final name = commandNames[command] ?? 'unmatched/unknown request';
       if (code != 0) {
@@ -342,7 +372,9 @@ class BatteryProtocol {
       String? issue;
       try {
         if (command == 0x42) measurements = Measurements.parse(info, address);
-        if (command == 0x44) warnings = BatteryWarnings.parse(info, address);
+        if (command == 0x44) {
+          warnings = BatteryWarnings.parse(info, address, version: version);
+        }
       } on FormatException catch (error) {
         issue = 'Battery $address: ${error.message}; payload=${hexBytes(info)}';
       }

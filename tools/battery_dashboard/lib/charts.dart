@@ -13,8 +13,9 @@ const panelColor = Color(0xFF121E2C);
 const muted = Color(0xFF8DA3B8);
 
 class SocGauge extends StatelessWidget {
-  const SocGauge({super.key, required this.value});
+  const SocGauge({super.key, required this.value, this.reported = false});
   final double? value;
+  final bool reported;
 
   @override
   Widget build(BuildContext context) {
@@ -22,7 +23,7 @@ class SocGauge extends StatelessWidget {
     return Semantics(
       label: percent == null
           ? 'State of charge unavailable'
-          : 'Calculated state of charge ${percent.toStringAsFixed(1)} percent',
+          : '${reported ? 'Reported' : 'Calculated'} state of charge ${percent.toStringAsFixed(1)} percent',
       child: SizedBox(
         width: 116,
         height: 116,
@@ -50,9 +51,9 @@ class SocGauge extends StatelessWidget {
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                const Text(
-                  'CALC. SOC',
-                  style: TextStyle(
+                Text(
+                  reported ? 'REPORTED SOC' : 'CALC. SOC',
+                  style: const TextStyle(
                     color: muted,
                     fontSize: 10,
                     letterSpacing: 1.1,
@@ -274,9 +275,11 @@ class TemperatureChart extends StatelessWidget {
     super.key,
     required this.values,
     required this.warningCodes,
-  });
+    this.labels,
+  }) : assert(labels == null || labels.length == values.length);
   final List<double> values;
   final List<int> warningCodes;
+  final List<String>? labels;
 
   @override
   Widget build(BuildContext context) {
@@ -312,9 +315,11 @@ class TemperatureChart extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 8),
-        const Text(
-          'Sensor roles are not identified by the protocol.',
-          style: TextStyle(color: muted, fontSize: 11),
+        Text(
+          labels == null
+              ? 'Sensor roles are not identified by the protocol.'
+              : 'Sensor order from the selected protocol register map.',
+          style: const TextStyle(color: muted, fontSize: 11),
         ),
         const SizedBox(height: 16),
         ...List.generate(values.length, (index) {
@@ -327,7 +332,7 @@ class TemperatureChart extends StatelessWidget {
                 SizedBox(
                   width: 74,
                   child: Text(
-                    'Sensor ${index + 1}',
+                    labels?[index] ?? 'Sensor ${index + 1}',
                     style: const TextStyle(color: muted, fontSize: 12),
                   ),
                 ),

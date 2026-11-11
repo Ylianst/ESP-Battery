@@ -45,6 +45,13 @@ void ESPBatteryComponent::setup() {
 		}
 		this->socket_->listen(8);
 	}
+#ifdef USE_ESPBATTERY_CAN
+	if (this->canbus_ != nullptr) {
+		this->canbus_->add_callback([this](uint32_t id, bool extended, bool remote, const std::vector<uint8_t> &data) {
+			this->receive_can_(id, extended, remote, data);
+		});
+	}
+#endif
 }
 
 void ESPBatteryComponent::loop() {
@@ -57,6 +64,9 @@ void ESPBatteryComponent::loop() {
 
 void ESPBatteryComponent::dump_config() {
 	ESP_LOGCONFIG(TAG, "ESP-Battery:");
+#ifdef USE_ESPBATTERY_CAN
+	ESP_LOGCONFIG(TAG, "  Transport: %s", this->canbus_ != nullptr ? "CAN (SLCAN frames)" : "UART (raw bytes)");
+#endif
 #if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 7, 0)
 	char use_address_buf[esphome::network::USE_ADDRESS_BUFFER_SIZE];
 	ESP_LOGCONFIG(TAG, "  Address: %s:%u", esphome::network::get_use_address_to(use_address_buf), this->port_);
@@ -95,6 +105,8 @@ void ESPBatteryComponent::cleanup() {
 
 // Read bytes from the RS485 bus into the ring buffer.
 void ESPBatteryComponent::read() {
+#ifdef USE_ESPBATTERY_UART
+	if (this->stream_ == nullptr) return;
 	size_t len = 0;
 	int available;
 	while ((available = this->stream_->available()) > 0) {
@@ -120,7 +132,36 @@ void ESPBatteryComponent::read() {
 		this->stream_->read_array(&this->buf_[this->buf_index(this->buf_head_)], len);
 		this->buf_head_ += len;
 	}
+#endif
 }
+
+#ifdef USE_ESPBATTERY_CAN
+void ESPBatteryComponent::receive_can_(uint32_t id, bool extended, bool remote, const std::vector<uint8_t> &data) {
+	if (this->is_failed() || this->clients_.empty()) return;
+	if (data.size() > 8 || id > (extended ? 0x1FFFFFFFU : 0x7FFU)) {
+		ESP_LOGW(TAG, "Cannot relay invalid classic CAN frame");
+		return;
+	}
+	const std::string line = format_slcan({id, extended, remote, data});
+	if (this->buf_size_ - (this->buf_head_ - this->buf_tail_) < line.size())
+		this->flush();
+
+	this->buf_tail_ = this->buf_head_;
+	for (Client &client : this->clients_) {
+		if (client.disconnected) continue;
+		if (this->buf_head_ - client.position + line.size() > this->buf_size_) {
+			// Closing slow clients avoids dropping bytes in the middle of a CAN record.
+			ESP_LOGW(TAG, "Disconnecting slow CAN client %s: outgoing buffer full", client.identifier.c_str());
+			client.disconnected = true;
+			client.socket->shutdown(SHUT_RDWR);
+		} else {
+			this->buf_tail_ = std::min(this->buf_tail_, client.position);
+		}
+	}
+	for (char value : line)
+		this->buf_[this->buf_index(this->buf_head_++)] = static_cast<uint8_t>(value);
+}
+#endif
 
 // Send buffered RS485 bytes to all connected TCP clients.
 void ESPBatteryComponent::flush() {
@@ -165,12 +206,33 @@ void ESPBatteryComponent::write() {
 			continue;
 
 		while ((read = client.socket->read(&buf, sizeof(buf))) > 0) {
+#ifdef USE_ESPBATTERY_CAN
+			if (this->canbus_ != nullptr) {
+				for (ssize_t i = 0; i < read; i++) {
+					SlcanFrame frame;
+					auto result = client.parser.feed(buf[i], frame);
+					if (result == SlcanParser::INVALID) {
+						ESP_LOGW(TAG, "Invalid or unsupported SLCAN frame from %s; disconnecting", client.identifier.c_str());
+						client.disconnected = true;
+						client.socket->shutdown(SHUT_RDWR);
+						break;
+					}
+					if (result == SlcanParser::FRAME)
+						this->canbus_->send_data(frame.id, frame.extended, frame.remote, frame.data);
+				}
+				if (client.disconnected) break;
+				continue;
+			}
+#endif
+#ifdef USE_ESPBATTERY_UART
 			if (this->flow_control_pin_ != nullptr) { this->flow_control_pin_->digital_write(true); }
 			this->stream_->write_array(buf, read);
 			this->stream_->flush();
 			if (this->flow_control_pin_ != nullptr) { this->flow_control_pin_->digital_write(false); }
+#endif
 		}
 
+		if (client.disconnected) continue;
 		if (read == 0 || errno == ECONNRESET) {
 			ESP_LOGD(TAG, "Client %s disconnected", client.identifier.c_str());
 			client.disconnected = true;

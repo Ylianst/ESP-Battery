@@ -88,7 +88,7 @@ function measurements(info, address) {
   ].join('\n');
 }
 
-function warnings(info, address) {
+function warnings(info, address, version) {
   if (info.length < 3 || info[1] !== address) {
     return '  Unrecognized warning layout; payload=' + bytes(info);
   }
@@ -100,28 +100,33 @@ function warnings(info, address) {
   const cells = info.subarray(offset, offset + cellCount);
   offset += cellCount;
   const tempCount = info[offset++];
-  if (tempCount > 16 || info.length < offset + tempCount + 12) {
+  const statusCount = version === 0x20 ? 8 : 12;
+  if (tempCount > 16 || info.length < offset + tempCount + statusCount) {
     return '  Invalid/truncated warning data; payload=' + bytes(info);
   }
   const temperatures = info.subarray(offset, offset + tempCount);
   offset += tempCount;
   const nonzero = (values) => Array.from(values,
     (value, index) => value ? `${index + 1}=0x${hex(value)}` : null).filter(Boolean).join(', ') || 'all zero';
-  const names = ['charge-current warning', 'pack-voltage warning', 'discharge-current warning',
-    'protection1', 'protection2', 'instruction', 'control', 'fault',
-    'balance1', 'balance2', 'warning1', 'warning2'];
+  const names = version === 0x20
+    ? Array.from({ length: statusCount }, (_, i) => `register${i + 1}`)
+    : ['charge-current warning', 'pack-voltage warning', 'discharge-current warning',
+      'protection1', 'protection2', 'instruction', 'control', 'fault',
+      'balance1', 'balance2', 'warning1', 'warning2'];
   return [
     `  Cell warning codes (${cellCount}): ${nonzero(cells)}`,
     `  Temperature warning codes (${tempCount}): ${nonzero(temperatures)}`,
     `  Status registers: ${names.map((name, i) => `${name}=0x${hex(info[offset + i])}`).join('; ')}`,
-    `  Vendor fields: flag=0x${hex(info[0])}; pack=0x${hex(info[1])}; extension=${bytes(info.subarray(offset + 12))}`,
+    `  Vendor fields: flag=0x${hex(info[0])}; pack=0x${hex(info[1])}; extension=${bytes(info.subarray(offset + statusCount))}`,
   ].join('\n');
 }
 
 class CommandDecoder {
-  constructor() {
+  constructor({ onResponse, responseTimeout = 5000 } = {}) {
     this.frame = '';
     this.pending = new Map();
+    this.onResponse = onResponse;
+    this.responseTimeout = responseTimeout;
   }
 
   decode(frame) {
@@ -129,29 +134,39 @@ class CommandDecoder {
     if (parsed.error) return `Invalid frame: ${parsed.error}; ASCII=${visible(frame)}\n`;
     const { version, address, type, code, info } = parsed;
     const prefix = `Battery ${address} (0x${hex(address)}), protocol ${hex(version)}, CID1=0x${hex(type)}`;
-    if (version !== 0x25 || type !== 0x46) {
+    if ((version !== 0x25 && version !== 0x20) || type !== 0x46) {
       return `${prefix}: unsupported protocol; code=0x${hex(code)}; payload=${bytes(info)}\n`;
     }
 
     const pending = this.pending.get(address);
     // Error 0x90 overlaps the pack-number request; the observed query has no payload.
-    const response = code <= 0x0f || (code === 0x90 && info.length > 0 && pending);
+    const response = code <= 0x0f ||
+      (code === 0x90 && pending && (pending.code !== 0x90 || info.length > 0));
     if (!response) {
-      this.pending.set(address, { code, time: Date.now() });
+      this.pending.set(address, {
+        code,
+        packAddress: (code === 0x42 || code === 0x44) && info.length === 1 ? info[0] : undefined,
+        time: Date.now(),
+      });
       return `${prefix}: REQUEST ${commands.get(code) || 'Unknown command'} (0x${hex(code)}); payload=${bytes(info)}; checksum OK\n`;
     }
 
     this.pending.delete(address);
-    const matched = pending && Date.now() - pending.time <= 5000;
+    const matched = pending && Date.now() - pending.time <= this.responseTimeout;
     const command = matched ? pending.code : undefined;
+    if (this.onResponse) this.onResponse(parsed, command);
     const label = command === undefined ? 'unmatched request' : `${commands.get(command) || 'Unknown command'} (0x${hex(command)})`;
     const status = returnCodes.get(code) || `Unknown return code 0x${hex(code)}`;
     let output = `${prefix}: RESPONSE ${label}: ${status}; checksum OK\n`;
     if (code !== 0 || command === undefined) {
       return output + `  Payload=${bytes(info)}\n`;
     }
-    if (command === 0x42) output += measurements(info, address) + '\n';
-    else if (command === 0x44) output += warnings(info, address) + '\n';
+    const packAddress = pending.packAddress === undefined ? address : pending.packAddress;
+    if ((command === 0x42 || command === 0x44) && packAddress === 0xff) {
+      return output + `  All-pack query; payload=${bytes(info)} (multi-pack layout not assumed)\n`;
+    }
+    if (command === 0x42) output += measurements(info, packAddress) + '\n';
+    else if (command === 0x44) output += warnings(info, packAddress, version) + '\n';
     else if (command === 0x90 && info.length === 1) {
       output += `  Pack number/address field: ${info[0]} (0x${hex(info[0])})\n`;
     }
@@ -192,4 +207,4 @@ class CommandDecoder {
   }
 }
 
-module.exports = { CommandDecoder };
+module.exports = { CommandDecoder, parseFrame };

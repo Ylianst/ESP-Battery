@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:battery_dashboard/battery_connection.dart';
 import 'package:battery_dashboard/main.dart';
 import 'package:battery_dashboard/protocol.dart';
+import 'package:battery_dashboard/polling.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -12,7 +13,165 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'fixtures.dart';
 
+class CapturingConnection extends BatteryConnection {
+  PollingSettings? captured;
+
+  @override
+  Future<void> connect(
+    String host,
+    int port, {
+    PollingSettings? polling,
+  }) async {
+    captured = polling;
+    showState(LinkState.connecting);
+  }
+
+  void showState(LinkState value) {
+    state = value;
+    notifyListeners();
+  }
+}
+
 void main() {
+  testWidgets(
+    'polling is opt-in, responsive, validated and locked until disconnect',
+    (tester) async {
+      final connection = CapturingConnection();
+      addTearDown(connection.dispose);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.binding.setSurfaceSize(const Size(1000, 1200));
+      await tester.pumpWidget(BatteryDashboard(connection: connection));
+      expect(
+        tester
+            .widget<SwitchListTile>(find.byKey(const Key('enable-polling')))
+            .value,
+        isFalse,
+      );
+      expect(find.byType(TextFormField), findsNWidgets(2));
+      await tester.tap(find.byKey(const Key('enable-polling')));
+      await tester.pumpAndSettle();
+      for (final width in [360.0, 600.0, 900.0, 1440.0]) {
+        await tester.binding.setSurfaceSize(Size(width, 1200));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('polling-addresses')), findsOneWidget);
+        expect(
+          tester.takeException(),
+          isNull,
+          reason: 'Active controls at $width',
+        );
+      }
+      await tester.enterText(find.byKey(const Key('polling-addresses')), '0');
+      await tester.tap(find.text('Connect'));
+      await tester.pumpAndSettle();
+      expect(find.text('Use unique addresses 1-247'), findsOneWidget);
+      expect(connection.state, LinkState.disconnected);
+      await tester.tap(find.byKey(const Key('polling-protocol')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('ASCII PACE (25 / 20 replies)').last);
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('polling-addresses')), '16');
+      await tester.tap(find.text('Connect'));
+      await tester.pumpAndSettle();
+      expect(find.text('Use unique addresses 0-15'), findsOneWidget);
+      await tester.enterText(find.byKey(const Key('polling-addresses')), '1,3');
+      await tester.tap(find.text('Connect'));
+      await tester.pumpAndSettle();
+      expect(connection.captured!.addresses, [1, 3]);
+      expect(connection.captured!.protocol, PollingProtocol.pace);
+      for (final state in [LinkState.connecting, LinkState.connected]) {
+        connection.showState(state);
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<SwitchListTile>(find.byKey(const Key('enable-polling')))
+              .onChanged,
+          isNull,
+        );
+        expect(
+          tester
+              .widget<TextFormField>(find.byKey(const Key('polling-addresses')))
+              .enabled,
+          isFalse,
+        );
+        expect(
+          tester
+              .widget<DropdownButtonFormField<PollingProtocol>>(
+                find.byKey(const Key('polling-protocol')),
+              )
+              .onChanged,
+          isNull,
+        );
+      }
+      await tester.tap(find.text('Disconnect'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextFormField>(find.byKey(const Key('polling-addresses')))
+            .enabled,
+        isTrue,
+      );
+      await tester.tap(find.byKey(const Key('enable-polling')));
+      await tester.pumpAndSettle();
+      expect(find.byType(TextFormField), findsNWidgets(2));
+      await tester.tap(find.text('Connect'));
+      await tester.pumpAndSettle();
+      expect(connection.captured, isNull);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Modbus telemetry uses reported SOC and no fabricated PACE metadata',
+    (tester) async {
+      final now = DateTime.now();
+      final protocol = ModbusProtocol(
+        responseTimeout: const Duration(seconds: 2),
+      );
+      protocol.expect(PollRequest.modbus(1, 0, 8), now);
+      protocol.add(bytesFromHex(modbusBasic), at: now);
+      protocol.expect(PollRequest.modbus(1, 9, 4), now);
+      final warnings = protocol
+          .add(bytesFromHex(modbusStatus), at: now)
+          .single
+          .warnings!;
+      protocol.expect(PollRequest.modbus(1, 15, 22), now);
+      final measurements = protocol
+          .add(bytesFromHex(modbusCells), at: now)
+          .single
+          .measurements!;
+      final connection = BatteryConnection()..state = LinkState.connected;
+      connection.batteries[1] = BatteryState(1)
+        ..measurements = measurements
+        ..warnings = warnings
+        ..measurementAt = now
+        ..warningsAt = now
+        ..lastFrame = modbusCells.toUpperCase();
+      addTearDown(connection.dispose);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.binding.setSurfaceSize(const Size(1000, 1200));
+      await tester.pumpWidget(BatteryDashboard(connection: connection));
+      await tester.pumpAndSettle();
+      expect(find.text('REPORTED SOC'), findsOneWidget);
+      expect(find.text('CALC. SOC'), findsNothing);
+      expect(find.text('MOSFET'), findsOneWidget);
+      expect(find.text('Environment'), findsOneWidget);
+      final details = find.text('Protocol details & vendor fields');
+      await tester.ensureVisible(details);
+      await tester.tap(details);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Modbus RTU / function 03'), findsOneWidget);
+      expect(find.textContaining('Reported SOH: 100%'), findsOneWidget);
+      expect(find.text('Latest validated reply (RTU hex)'), findsOneWidget);
+      expect(find.textContaining('Measurement flag'), findsNothing);
+      final warningDetails = find.text('Warning fields all zero');
+      await tester.ensureVisible(warningDetails);
+      await tester.tap(warningDetails);
+      await tester.pumpAndSettle();
+      expect(find.text('Cell warning codes: not provided'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets(
     'connect controls drive a real read-only TCP session and display telemetry',
     (tester) async {
