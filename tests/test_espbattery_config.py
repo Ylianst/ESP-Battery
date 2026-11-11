@@ -185,9 +185,11 @@ class ESPBatteryConfigTest(unittest.TestCase):
         self.assertIn("to_upper", text_filters[0])
         self.assertIn("lambda", text_filters[1])
         generated = self.validate(generate=True)
-        self.assertIn("new sensor::TimeoutFilter", generated)
-        self.assertIn("new sensor::DeltaFilter", generated)
-        self.assertIn("new text_sensor::ToUpperFilter", generated)
+        self.assertIn("sensor::TimeoutFilter", generated)
+        self.assertIn("sensor::DeltaFilter", generated)
+        self.assertIn("text_sensor::ToUpperFilter", generated)
+        self.assertRegex(generated, r"set_filters\(\{[^}\n]*timeout[^}\n]*,\s*[^}\n]*delta[^}\n]*,\s*[^}\n]*lambda[^}\n]*\}\)")
+        self.assertRegex(generated, r"set_filters\(\{[^}\n]*toupper[^}\n]*,\s*[^}\n]*lambda[^}\n]*\}\)")
 
     def test_force_update_preserves_repeated_numeric_updates(self):
         self.pylon_entities()
