@@ -26,7 +26,7 @@ def append_change_filter(config):
     if not config[CONF_FORCE_UPDATE]:
         # Keep raw samples flowing through timeout/averaging filters before deduplication.
         config[CONF_FILTERS] = config.get(CONF_FILTERS, []) + sensor.validate_filters([{
-            "lambda": (
+            "lambda": cv.Lambda(
                 "static esphome::espbattery::ChangeDetector<float> changes;\n"
                 "if (!changes.changed(x)) return {};\n"
                 "return x;"

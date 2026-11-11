@@ -10,7 +10,7 @@ CONF_MANUFACTURER = "manufacturer"
 
 def append_change_filter(config):
     config[CONF_FILTERS] = config.get(CONF_FILTERS, []) + text_sensor.validate_filters([{
-        "lambda": (
+        "lambda": cv.Lambda(
             "static esphome::espbattery::ChangeDetector<std::string> changes;\n"
             "if (!changes.changed(x)) return {};\n"
             "return x;"
